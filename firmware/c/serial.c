@@ -8,17 +8,71 @@
 #include "pico/multicore.h"
 #include "hardware/watchdog.h"
 
+#include "settings.h"
+
 static char serial_buffer[256];
 static char last_command[256];
 
-#define PULSE_DELAY_CYCLES_DEFAULT 0
-#define PULSE_TIME_CYCLES_DEFAULT 625 // 5us in 8ns cycles
-#define PULSE_TIME_US_DEFAULT 5 // 5us
-#define PULSE_POWER_DEFAULT 0.0122
+#define PULSE_DELAY_CYCLES_DEFAULT PICOEMP_DEFAULT_PULSE_DELAY_CYCLES
+#define PULSE_TIME_CYCLES_DEFAULT PICOEMP_DEFAULT_PULSE_TIME_CYCLES // 5us in 8ns cycles
+#define PULSE_TIME_US_DEFAULT PICOEMP_DEFAULT_PULSE_TIME_US // 5us
+#define PULSE_POWER_DEFAULT PICOEMP_DEFAULT_PULSE_POWER
 static uint32_t pulse_time;
 static uint32_t pulse_delay_cycles;
 static uint32_t pulse_time_cycles;
 static union float_union {float f; uint32_t ui32;} pulse_power;
+
+static bool save_settings_to_flash() {
+    picoemp_settings_t settings = {
+        .pulse_time = pulse_time,
+        .pulse_power = pulse_power.f,
+    };
+
+    multicore_fifo_push_blocking(cmd_flash_lockout);
+    if(multicore_fifo_pop_blocking() != return_ok) {
+        return false;
+    }
+
+    bool saved = picoemp_settings_save(&settings);
+    picoemp_settings_flash_lockout_release();
+    while(picoemp_settings_flash_lockout_is_engaged()) {
+        __asm volatile("nop");
+    }
+
+    return saved;
+}
+
+static void monitor_fast_trigger() {
+    bool stop_requested = false;
+
+    while(1) {
+        if(multicore_fifo_rvalid()) {
+            uint32_t result = multicore_fifo_pop_blocking();
+            if(result == return_triggered) {
+                printf("Triggered!\n");
+            } else if(result == return_ok) {
+                while(1) {
+                    int c = getchar_timeout_us(0);
+                    if(c == PICO_ERROR_TIMEOUT || c == EOF) {
+                        break;
+                    }
+                }
+                printf("Fast trigger stopped.\n");
+                return;
+            }
+        }
+
+        if(!stop_requested) {
+            int c = getchar_timeout_us(1000);
+            if(c != PICO_ERROR_TIMEOUT && c != EOF) {
+                multicore_fifo_push_blocking(cmd_stop_fast_trigger);
+                stop_requested = true;
+            }
+        } else {
+            sleep_ms(1);
+        }
+    }
+}
 
 void read_line() {
     memset(serial_buffer, 0, sizeof(serial_buffer));
@@ -149,9 +203,8 @@ bool handle_command(char *command) {
         multicore_fifo_push_blocking(cmd_fast_trigger);
         uint32_t result = multicore_fifo_pop_blocking();
         if(result == return_ok) {
-            printf("Fast trigger active...\n");
-            multicore_fifo_pop_blocking();
-            printf("Triggered!\n");
+            printf("Fast trigger active. Send any byte to stop.\n");
+            monitor_fast_trigger();
         } else {
             printf("Setting up fast trigger failed.");
         }
@@ -222,6 +275,30 @@ bool handle_command(char *command) {
 
     if(strcmp(command, "c") == 0 || strcmp(command, "configure") == 0) {
         char **unused;
+        bool was_armed = false;
+        bool config_ok = true;
+        uint32_t status = 0;
+        uint32_t result = 0;
+
+        multicore_fifo_push_blocking(cmd_status);
+        result = multicore_fifo_pop_blocking();
+        if(result != return_ok) {
+            printf("Getting status failed.\n");
+            return true;
+        }
+
+        status = multicore_fifo_pop_blocking();
+        was_armed = (status & 0x1u) != 0;
+        if(was_armed) {
+            multicore_fifo_push_blocking(cmd_disarm);
+            result = multicore_fifo_pop_blocking();
+            if(result != return_ok) {
+                printf("Auto-disarm before configuration failed.\n");
+                return true;
+            }
+            printf("Device disarmed for configuration.\n");
+        }
+
         printf(" pulse_time (current: %d, default: %d)?\n> ", pulse_time, PULSE_TIME_US_DEFAULT);
         read_line();
         printf("\n");
@@ -240,9 +317,10 @@ bool handle_command(char *command) {
 
         multicore_fifo_push_blocking(cmd_config_pulse_time);
         multicore_fifo_push_blocking(pulse_time);
-        uint32_t result = multicore_fifo_pop_blocking();
+        result = multicore_fifo_pop_blocking();
         if(result != return_ok) {
             printf("Config pulse_time failed.");
+            config_ok = false;
         }
 
         multicore_fifo_push_blocking(cmd_config_pulse_power);
@@ -250,6 +328,25 @@ bool handle_command(char *command) {
         result = multicore_fifo_pop_blocking();
         if(result != return_ok) {
             printf("Config pulse_power failed.");
+            config_ok = false;
+        }
+
+        if(config_ok) {
+            if(save_settings_to_flash()) {
+                printf("Settings saved.\n");
+            } else {
+                printf("Saving settings failed.\n");
+            }
+        }
+
+        if(was_armed) {
+            multicore_fifo_push_blocking(cmd_arm);
+            result = multicore_fifo_pop_blocking();
+            if(result == return_ok) {
+                printf("Device re-armed after configuration.\n");
+            } else {
+                printf("Auto re-arm after configuration failed.\n");
+            }
         }
 
         printf("pulse_time=%d, pulse_power=%f\n", pulse_time, pulse_power.f);
@@ -277,12 +374,16 @@ bool handle_command(char *command) {
 }
 
 void serial_console() {
+    picoemp_settings_t startup_settings;
+
     multicore_fifo_drain();
 
     memset(last_command, 0, sizeof(last_command));
 
-    pulse_time = PULSE_TIME_US_DEFAULT;
-    pulse_power.f = PULSE_POWER_DEFAULT;
+    picoemp_settings_load_defaults(&startup_settings);
+    picoemp_settings_load(&startup_settings);
+    pulse_time = startup_settings.pulse_time;
+    pulse_power.f = startup_settings.pulse_power;
     pulse_delay_cycles = PULSE_DELAY_CYCLES_DEFAULT;
     pulse_time_cycles = PULSE_TIME_CYCLES_DEFAULT;
     

@@ -14,12 +14,14 @@
     pull block          side 0b00
     mov y osr           side 0b00   ; read length into scratch y
     irq clear 0         side 0b00   ; clear IRQ before starting
+    irq clear 1         side 0b00   ; clear pulse-start IRQ before starting
     wait 1 PIN 0        side 0b10   ; wait for trigger input to go high (polarity=1), 
                                     ; on the first input gpio (defined below),
                                     ; and sideset gpio_trigger_out_debug high
     ; nop                 side 0b10   ;      -> nop instead of wait, gpio_trigger_out_debug high
 delay_loop:
     jmp x-- delay_loop  side 0b10   ; count down the delay
+    irq set 1           side 0b01   ; pulse start, signal LED update
 pulse_loop:
     jmp y-- pulse_loop  side 0b01   ; count down the pulse length
     irq set 0           side 0b00   ; pulse stop, signal that program is finished with IRQ

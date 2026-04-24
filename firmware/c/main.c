@@ -5,6 +5,7 @@
 #include "pico/multicore.h"
 
 #include "picoemp.h"
+#include "settings.h"
 #include "serial.h"
 
 #include "trigger_basic.pio.h"
@@ -12,14 +13,19 @@
 static bool armed = false;
 static bool timeout_active = true;
 static bool hvp_internal = true;
+static bool fast_trigger_active = false;
+static bool fast_trigger_stop_requested = false;
+static bool fast_trigger_led_active = false;
+static bool fast_trigger_cycle_complete = false;
+static absolute_time_t fast_trigger_led_off_time;
 static absolute_time_t timeout_time;
 static uint offset = 0xFFFFFFFF;
 
 // defaults taken from original code
-#define PULSE_DELAY_CYCLES_DEFAULT 0
-#define PULSE_TIME_CYCLES_DEFAULT 625 // 5us in 8ns cycles
-#define PULSE_TIME_US_DEFAULT 5 // 5us
-#define PULSE_POWER_DEFAULT 0.0122
+#define PULSE_DELAY_CYCLES_DEFAULT PICOEMP_DEFAULT_PULSE_DELAY_CYCLES
+#define PULSE_TIME_CYCLES_DEFAULT PICOEMP_DEFAULT_PULSE_TIME_CYCLES // 5us in 8ns cycles
+#define PULSE_TIME_US_DEFAULT PICOEMP_DEFAULT_PULSE_TIME_US // 5us
+#define PULSE_POWER_DEFAULT PICOEMP_DEFAULT_PULSE_POWER
 static uint32_t pulse_time;
 static uint32_t pulse_delay_cycles;
 static uint32_t pulse_time_cycles;
@@ -28,12 +34,14 @@ static union float_union {float f; uint32_t ui32;} pulse_power;
 void arm() {
     gpio_put(PIN_LED_CHARGE_ON, true);
     armed = true;
+    picoemp_set_armed_indicator(true);
 }
 
 void disarm() {
     gpio_put(PIN_LED_CHARGE_ON, false);
     armed = false;
     picoemp_disable_pwm();
+    picoemp_set_armed_indicator(false);
 }
 
 uint32_t get_status() {
@@ -79,7 +87,30 @@ void fast_trigger() {
 
 }
 
+void stop_fast_trigger(bool wait_for_led) {
+    if(!fast_trigger_active) {
+        return;
+    }
+
+    pio_sm_set_enabled(pio0, 0, false);
+    picoemp_configure_pulse_output();
+
+    if(wait_for_led && fast_trigger_led_active) {
+        fast_trigger_cycle_complete = true;
+        return;
+    }
+
+    picoemp_set_pulse_indicator(false);
+    fast_trigger_active = false;
+    fast_trigger_stop_requested = false;
+    fast_trigger_led_active = false;
+    fast_trigger_cycle_complete = false;
+    multicore_fifo_push_blocking(return_ok);
+}
+
 int main() {
+    picoemp_settings_t startup_settings;
+
     // Initialize USB-UART as STDIO
     stdio_init_all();
 
@@ -93,8 +124,10 @@ int main() {
     // Run serial-console on second core
     multicore_launch_core1(serial_console);
 
-    pulse_time = PULSE_TIME_US_DEFAULT;
-    pulse_power.f = PULSE_POWER_DEFAULT;
+    picoemp_settings_load_defaults(&startup_settings);
+    picoemp_settings_load(&startup_settings);
+    pulse_time = startup_settings.pulse_time;
+    pulse_power.f = startup_settings.pulse_power;
     pulse_delay_cycles = PULSE_DELAY_CYCLES_DEFAULT;
     pulse_time_cycles = PULSE_TIME_CYCLES_DEFAULT;
 
@@ -141,12 +174,20 @@ int main() {
                     multicore_fifo_push_blocking(return_ok);
                     break;
                 case cmd_fast_trigger:
+                    if(fast_trigger_active) {
+                        multicore_fifo_push_blocking(return_failed);
+                        break;
+                    }
+                    fast_trigger_stop_requested = false;
+                    fast_trigger_led_active = false;
+                    fast_trigger_cycle_complete = false;
+                    picoemp_set_pulse_indicator(false);
                     fast_trigger();
+                    fast_trigger_active = true;
                     multicore_fifo_push_blocking(return_ok);
-                    while(!pio_interrupt_get(pio0, 0));
-                    multicore_fifo_push_blocking(return_ok);
-                    pio_sm_set_enabled(pio0, 0, false);
-                    picoemp_configure_pulse_output();
+                    break;
+                case cmd_stop_fast_trigger:
+                    fast_trigger_stop_requested = true;
                     break;
                 case cmd_internal_hvp:
                     picoemp_configure_pulse_output();
@@ -166,6 +207,9 @@ int main() {
                     pulse_power.ui32 = multicore_fifo_pop_blocking();
                     multicore_fifo_push_blocking(return_ok);
                     break;
+                case cmd_flash_lockout:
+                    picoemp_settings_flash_lockout_enter();
+                    break;
                 case cmd_toggle_gp1:
                     gpio_xor_mask(1<<1);
                     multicore_fifo_push_blocking(return_ok);
@@ -173,18 +217,56 @@ int main() {
             }
         }
 
+        if(fast_trigger_active) {
+            if(fast_trigger_stop_requested && !fast_trigger_led_active && !fast_trigger_cycle_complete) {
+                stop_fast_trigger(false);
+            }
+
+            if(!fast_trigger_led_active && pio_interrupt_get(pio0, 1)) {
+                picoemp_set_pulse_indicator(true);
+                fast_trigger_led_active = true;
+            }
+
+            if(!fast_trigger_cycle_complete && pio_interrupt_get(pio0, 0)) {
+                pio_sm_set_enabled(pio0, 0, false);
+                picoemp_configure_pulse_output();
+                fast_trigger_cycle_complete = true;
+                fast_trigger_led_off_time = delayed_by_ms(get_absolute_time(), 250);
+                multicore_fifo_push_blocking(return_triggered);
+            }
+
+            if(fast_trigger_led_active && fast_trigger_cycle_complete && (get_absolute_time() > fast_trigger_led_off_time)) {
+                picoemp_set_pulse_indicator(false);
+                fast_trigger_led_active = false;
+                fast_trigger_cycle_complete = false;
+
+                if(fast_trigger_stop_requested) {
+                    stop_fast_trigger(false);
+                } else {
+                    fast_trigger();
+                }
+            }
+        }
+
         // Pulse
-        if(gpio_get(PIN_BTN_PULSE)) {
+        if(!fast_trigger_active && gpio_get(PIN_BTN_PULSE)) {
             update_timeout();
             picoemp_pulse(pulse_time);
         }
 
         if(gpio_get(PIN_BTN_ARM)) {
             update_timeout();
-            if(!armed) {
-                arm();
+            if(fast_trigger_active) {
+                fast_trigger_stop_requested = true;
+                if(armed) {
+                    disarm();
+                }
             } else {
-                disarm();
+                if(!armed) {
+                    arm();
+                } else {
+                    disarm();
+                }
             }
             // YOLO debouncing
             while(gpio_get(PIN_BTN_ARM));
@@ -197,6 +279,9 @@ int main() {
 
         if(timeout_active && (get_absolute_time() > timeout_time) && armed) {
             disarm();
+            if(fast_trigger_active) {
+                fast_trigger_stop_requested = true;
+            }
         }
     }
     

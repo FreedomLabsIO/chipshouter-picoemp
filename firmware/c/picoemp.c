@@ -7,9 +7,12 @@
 
 #include <stdio.h>
 
+#include "oled.h"
+
 const uint32_t PIN_IN_TRIGGER = 0; // also GP0 on the board
 const uint32_t PIN_LED_HV = 6;
 const uint32_t PIN_LED_STATUS = 7;
+const uint32_t PIN_LED_PULSE_ACTIVE = 25;
 const uint32_t PIN_BTN_PULSE = 11;
 const uint32_t PIN_OUT_HVPULSE = 14;
 const uint32_t PIN_IN_CHARGED = 18;
@@ -18,6 +21,18 @@ const uint32_t PIN_LED_CHARGE_ON = 27;
 const uint32_t PIN_BTN_ARM = 28;
 
 static bool pwm_enabled = false;
+static bool oled_armed = false;
+static bool oled_pulse_active = false;
+
+static void picoemp_refresh_display() {
+    if(oled_pulse_active) {
+        picoemp_oled_show_pulse();
+    } else if(oled_armed) {
+        picoemp_oled_show_armed();
+    } else {
+        picoemp_oled_show_idle();
+    }
+}
 
 // Code from https://www.i-programmer.info/programming/hardware/14849-the-pico-in-c-basic-pwm.html?start=2
 uint32_t pwm_set_freq_duty(uint slice_num,
@@ -69,11 +84,24 @@ void picoemp_disable_pwm() {
     gpio_put(PIN_OUT_HVPWM, false);
 }
 
+void picoemp_set_armed_indicator(bool active) {
+    oled_armed = active;
+    picoemp_refresh_display();
+}
+
+void picoemp_set_pulse_indicator(bool active) {
+    gpio_put(PIN_LED_PULSE_ACTIVE, active);
+    oled_pulse_active = active;
+    picoemp_refresh_display();
+}
+
 void picoemp_pulse(uint32_t pulse_time) {
+    picoemp_set_pulse_indicator(true);
     gpio_put(PIN_OUT_HVPULSE, true);
     sleep_us(pulse_time);
     gpio_put(PIN_OUT_HVPULSE, false);
     sleep_ms(250);
+    picoemp_set_pulse_indicator(false);
 }
 
 void picoemp_configure_pulse_output() {
@@ -100,12 +128,15 @@ void picoemp_init() {
     // Initialize LED GPIOs
     gpio_init(PIN_LED_HV);
     gpio_init(PIN_LED_STATUS);
+    gpio_init(PIN_LED_PULSE_ACTIVE);
     gpio_init(PIN_LED_CHARGE_ON);
     gpio_set_dir(PIN_LED_HV, GPIO_OUT);
     gpio_set_dir(PIN_LED_STATUS, GPIO_OUT);
+    gpio_set_dir(PIN_LED_PULSE_ACTIVE, GPIO_OUT);
     gpio_set_dir(PIN_LED_CHARGE_ON, GPIO_OUT);
     // Enable status LED
     gpio_put(PIN_LED_STATUS, true);
+    gpio_put(PIN_LED_PULSE_ACTIVE, false);
 
     // Initialize button GPIOs
     gpio_init(PIN_BTN_ARM);
@@ -134,4 +165,7 @@ void picoemp_init() {
 
     // Configure PWM pin
     picoemp_disable_pwm();
+
+    picoemp_oled_init();
+    picoemp_refresh_display();
 }
