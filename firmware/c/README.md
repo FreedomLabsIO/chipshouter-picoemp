@@ -9,6 +9,21 @@ It currently supports:
 - Fast-trigger via GPIO0 (uses PIO for very fast and consistent triggering)
 - External HVP mode: use an external pulse generator (e.g. ChipWhisperer) to control EM pulse insertion
 
+## External serial wiring
+
+This build exposes the stdio command console on both:
+- USB CDC
+- UART0 on GPIO16 / GPIO17
+
+Pin mapping for the external UART:
+- `GPIO16` = UART TX
+- `GPIO17` = UART RX
+
+Fast trigger remains on:
+- `GPIO0` = trigger input
+
+All of these signals are `3.3V`.
+
 ## Serial command documentation:
 ```
 * [h]elp → displays list of commands
