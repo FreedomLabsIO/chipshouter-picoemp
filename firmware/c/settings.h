@@ -5,11 +5,11 @@
 
 #define PICOEMP_DEFAULT_PULSE_DELAY_CYCLES 0u
 #define PICOEMP_DEFAULT_PULSE_TIME_CYCLES 625u
-#define PICOEMP_DEFAULT_PULSE_TIME_US 5u
+#define PICOEMP_DEFAULT_PULSE_TIME_NS 5000u
 #define PICOEMP_DEFAULT_PULSE_POWER 0.0122f
 
 typedef struct {
-    uint32_t pulse_time;
+    uint32_t pulse_time_ns;
     float pulse_power;
 } picoemp_settings_t;
 

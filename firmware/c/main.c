@@ -24,9 +24,9 @@ static uint offset = 0xFFFFFFFF;
 // defaults taken from original code
 #define PULSE_DELAY_CYCLES_DEFAULT PICOEMP_DEFAULT_PULSE_DELAY_CYCLES
 #define PULSE_TIME_CYCLES_DEFAULT PICOEMP_DEFAULT_PULSE_TIME_CYCLES // 5us in 8ns cycles
-#define PULSE_TIME_US_DEFAULT PICOEMP_DEFAULT_PULSE_TIME_US // 5us
+#define PULSE_TIME_NS_DEFAULT PICOEMP_DEFAULT_PULSE_TIME_NS // 5us
 #define PULSE_POWER_DEFAULT PICOEMP_DEFAULT_PULSE_POWER
-static uint32_t pulse_time;
+static uint32_t pulse_time_ns;
 static uint32_t pulse_delay_cycles;
 static uint32_t pulse_time_cycles;
 static union float_union {float f; uint32_t ui32;} pulse_power;
@@ -126,7 +126,7 @@ int main() {
 
     picoemp_settings_load_defaults(&startup_settings);
     picoemp_settings_load(&startup_settings);
-    pulse_time = startup_settings.pulse_time;
+    pulse_time_ns = startup_settings.pulse_time_ns;
     pulse_power.f = startup_settings.pulse_power;
     pulse_delay_cycles = PULSE_DELAY_CYCLES_DEFAULT;
     pulse_time_cycles = PULSE_TIME_CYCLES_DEFAULT;
@@ -148,7 +148,7 @@ int main() {
                     multicore_fifo_push_blocking(return_ok);
                     break;
                 case cmd_pulse:
-                    picoemp_pulse(pulse_time);
+                    picoemp_pulse(pulse_time_ns);
                     update_timeout();
                     multicore_fifo_push_blocking(return_ok);
                     break;
@@ -200,7 +200,7 @@ int main() {
                     multicore_fifo_push_blocking(return_ok);
                     break;
                 case cmd_config_pulse_time:
-                    pulse_time = multicore_fifo_pop_blocking();
+                    pulse_time_ns = multicore_fifo_pop_blocking();
                     multicore_fifo_push_blocking(return_ok);
                     break;
                 case cmd_config_pulse_power:
@@ -251,7 +251,7 @@ int main() {
         // Pulse
         if(!fast_trigger_active && gpio_get(PIN_BTN_PULSE)) {
             update_timeout();
-            picoemp_pulse(pulse_time);
+            picoemp_pulse(pulse_time_ns);
         }
 
         if(gpio_get(PIN_BTN_ARM)) {

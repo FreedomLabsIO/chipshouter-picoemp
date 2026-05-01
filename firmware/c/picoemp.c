@@ -24,6 +24,17 @@ static bool pwm_enabled = false;
 static bool oled_armed = false;
 static bool oled_pulse_active = false;
 
+static uint32_t picoemp_ns_to_cpu_cycles(uint32_t pulse_time_ns) {
+    uint64_t cycles = ((uint64_t)clock_get_hz(clk_sys) * pulse_time_ns + 999999999ull) / 1000000000ull;
+    if(cycles == 0) {
+        cycles = 1;
+    }
+    if(cycles > UINT32_MAX) {
+        cycles = UINT32_MAX;
+    }
+    return (uint32_t)cycles;
+}
+
 static void picoemp_refresh_display() {
     if(oled_pulse_active) {
         picoemp_oled_show_pulse();
@@ -90,15 +101,17 @@ void picoemp_set_armed_indicator(bool active) {
 }
 
 void picoemp_set_pulse_indicator(bool active) {
-    gpio_put(PIN_LED_PULSE_ACTIVE, active);
+    //gpio_put(PIN_LED_PULSE_ACTIVE, active);
     oled_pulse_active = active;
     picoemp_refresh_display();
 }
 
-void picoemp_pulse(uint32_t pulse_time) {
+void picoemp_pulse(uint32_t pulse_time_ns) {
+    uint32_t pulse_cycles = picoemp_ns_to_cpu_cycles(pulse_time_ns);
+
     picoemp_set_pulse_indicator(true);
     gpio_put(PIN_OUT_HVPULSE, true);
-    sleep_us(pulse_time);
+    busy_wait_at_least_cycles(pulse_cycles);
     gpio_put(PIN_OUT_HVPULSE, false);
     sleep_ms(250);
     picoemp_set_pulse_indicator(false);

@@ -15,16 +15,16 @@ static char last_command[256];
 
 #define PULSE_DELAY_CYCLES_DEFAULT PICOEMP_DEFAULT_PULSE_DELAY_CYCLES
 #define PULSE_TIME_CYCLES_DEFAULT PICOEMP_DEFAULT_PULSE_TIME_CYCLES // 5us in 8ns cycles
-#define PULSE_TIME_US_DEFAULT PICOEMP_DEFAULT_PULSE_TIME_US // 5us
+#define PULSE_TIME_NS_DEFAULT PICOEMP_DEFAULT_PULSE_TIME_NS // 5us
 #define PULSE_POWER_DEFAULT PICOEMP_DEFAULT_PULSE_POWER
-static uint32_t pulse_time;
+static uint32_t pulse_time_ns;
 static uint32_t pulse_delay_cycles;
 static uint32_t pulse_time_cycles;
 static union float_union {float f; uint32_t ui32;} pulse_power;
 
 static bool save_settings_to_flash() {
     picoemp_settings_t settings = {
-        .pulse_time = pulse_time,
+        .pulse_time_ns = pulse_time_ns,
         .pulse_power = pulse_power.f,
     };
 
@@ -299,13 +299,13 @@ bool handle_command(char *command) {
             printf("Device disarmed for configuration.\n");
         }
 
-        printf(" pulse_time (current: %d, default: %d)?\n> ", pulse_time, PULSE_TIME_US_DEFAULT);
+        printf(" pulse_time_ns (current: %u, default: %u)?\n> ", pulse_time_ns, PULSE_TIME_NS_DEFAULT);
         read_line();
         printf("\n");
         if (serial_buffer[0] == 0)
             printf("Using default\n");
         else
-            pulse_time = strtoul(serial_buffer, unused, 10);
+            pulse_time_ns = strtoul(serial_buffer, unused, 10);
 
         printf(" pulse_power (current: %f, default: %f)?\n> ", pulse_power.f, PULSE_POWER_DEFAULT);
         read_line();
@@ -316,7 +316,7 @@ bool handle_command(char *command) {
             pulse_power.f = strtof(serial_buffer, unused);
 
         multicore_fifo_push_blocking(cmd_config_pulse_time);
-        multicore_fifo_push_blocking(pulse_time);
+        multicore_fifo_push_blocking(pulse_time_ns);
         result = multicore_fifo_pop_blocking();
         if(result != return_ok) {
             printf("Config pulse_time failed.");
@@ -349,7 +349,7 @@ bool handle_command(char *command) {
             }
         }
 
-        printf("pulse_time=%d, pulse_power=%f\n", pulse_time, pulse_power.f);
+        printf("pulse_time_ns=%u, pulse_power=%f\n", pulse_time_ns, pulse_power.f);
 
         return true;
     }
@@ -382,7 +382,7 @@ void serial_console() {
 
     picoemp_settings_load_defaults(&startup_settings);
     picoemp_settings_load(&startup_settings);
-    pulse_time = startup_settings.pulse_time;
+    pulse_time_ns = startup_settings.pulse_time_ns;
     pulse_power.f = startup_settings.pulse_power;
     pulse_delay_cycles = PULSE_DELAY_CYCLES_DEFAULT;
     pulse_time_cycles = PULSE_TIME_CYCLES_DEFAULT;
@@ -403,7 +403,7 @@ void serial_console() {
             printf("- [fa]st_trigger_configure: delay_cycles=%d, time_cycles=%d\n", pulse_delay_cycles, pulse_time_cycles);
             printf("- [in]ternal_hvp\n");
             printf("- [ex]ternal_hvp\n");
-            printf("- [c]onfigure: pulse_time=%d, pulse_power=%f\n", pulse_time, pulse_power.f);
+            printf("- [c]onfigure: pulse_time_ns=%u, pulse_power=%f\n", pulse_time_ns, pulse_power.f);
             printf("- [t]oggle_gp1\n");
             printf("- [s]tatus\n");
             printf("- [r]eset\n");
